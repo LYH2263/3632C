@@ -12,7 +12,10 @@
     "e2e": "playwright test -c e2e/playwright.config.ts",
     "e2e:ui": "playwright test -c e2e/playwright.config.ts --project=ui-mock --project=ui-api --project=full-chain",
     "e2e:api": "playwright test -c e2e/playwright.config.ts --project=api-only",
+    "e2e:ci:api": "playwright test -c e2e/playwright.ci-api-only.config.ts",
+    "e2e:ci:ui-mock": "playwright test -c e2e/playwright.ci-ui-mock.config.ts",
     "e2e:report": "playwright show-report e2e/playwright-report",
+    "ci:local": "pnpm lint && pnpm test && pnpm build && pnpm e2e:ci:api && pnpm e2e:ci:ui-mock",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down -v"
   },

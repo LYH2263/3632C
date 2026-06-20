@@ -136,6 +136,14 @@ docker compose down -v
 
 ## 5. 质量验证
 
+### CI 状态
+
+[![CI](https://github.com/your-org/your-repo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/your-org/your-repo/actions/workflows/ci.yml)
+
+> 替换 `your-org/your-repo` 为实际的 GitHub 仓库路径。
+
+### 本地快速验证
+
 ```bash
 pnpm lint
 pnpm test
@@ -143,13 +151,122 @@ pnpm build
 pnpm e2e
 ```
 
-E2E 分组执行：
+### 本地复现 CI 完整流程
+
+使用 Docker Compose 启动 MySQL + Redis，然后执行 CI 等价命令：
+
+```bash
+# 1. 启动依赖服务（MySQL 8 + Redis 7）
+docker compose up -d mysql redis
+
+# 2. 安装依赖
+pnpm install
+pnpm backend:setup
+
+# 3. 执行 CI 全量检查
+pnpm ci:local
+
+# 4. 停止服务
+docker compose down -v
+```
+
+或分步执行各 CI Job：
+
+```bash
+# Job 1: Lint
+pnpm lint
+
+# Job 2: shared 单元测试
+pnpm --filter @community-store/shared test
+
+# Job 3: backend 单元测试（需 MySQL + Redis）
+export MYSQL_DATABASE=community_store
+export MYSQL_USER=community_user
+export MYSQL_PASSWORD=community_pass
+export MYSQL_HOST=127.0.0.1
+export REDIS_HOST=127.0.0.1
+cd apps/backend && python manage.py reset_mvp_data && pytest -v
+
+# Job 4: E2E API-only（需 MySQL + Redis）
+pnpm e2e:ci:api
+
+# Job 5: E2E UI-mock（无需后端）
+pnpm e2e:ci:ui-mock
+```
+
+### E2E 分组执行
 
 ```bash
 pnpm e2e:api
 pnpm e2e:ui
 pnpm e2e:report
 ```
+
+### CI Job 说明
+
+| Job          | 依赖服务       | 测试范围                  | 平均耗时 |
+|--------------|----------------|---------------------------|----------|
+| lint         | 无             | 全 monorepo 代码规范      | ~1min    |
+| test-shared  | 无             | packages/shared 单元测试  | ~30s     |
+| test-backend | MySQL + Redis  | Django 应用单元测试       | ~2min    |
+| e2e-api-only | MySQL + Redis  | 后端 API 集成测试         | ~3min    |
+| e2e-ui-mock  | 无             | 前端 UI Mock 测试         | ~2min    |
+
+### `full-chain` 暂不纳入 CI 的理由
+
+`full-chain` 测试（跨买家端、商家端、后端的全链路集成测试）暂未纳入默认 CI 流水线，主要原因：
+
+1. **资源消耗大**：需同时启动 MySQL、Redis、后端、买家端 H5、商家端 5 个服务，单 Job 资源占用是 `api-only` 的 2-3 倍。
+2. **执行时间长**：全链路测试包含多应用交互，单测平均耗时 8-10 分钟，是 `api-only` + `ui-mock` 总和的 2 倍。
+3. **稳定性风险**：跨应用 UI 交互（页面跳转、状态同步）对 CI 环境的网络波动和资源限制更敏感，偶发失败率较高。
+4. **覆盖率重叠**：`api-only` 已覆盖后端业务逻辑，`ui-mock` 已覆盖前端交互，`ui-api` 已覆盖单应用 API 集成，`full-chain` 主要验证跨应用状态同步，核心逻辑已被其他测试覆盖。
+5. **反馈速度优先**：PR 流水线需要在 5-8 分钟内给出反馈，全链路测试会显著拉长 CI 周期。
+
+### 后续扩展方案
+
+当团队和项目成熟后，可按以下阶段引入 `full-chain` 测试：
+
+#### 阶段 1：夜间定时执行（推荐首选）
+```yaml
+# 在 ci.yml 中新增 trigger
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 每天凌晨 2 点执行
+```
+- 不阻塞 PR，不影响开发节奏
+- 用于发现跨应用回归问题
+- 失败邮件通知核心开发人员
+
+#### 阶段 2：main 分支合并后执行
+```yaml
+jobs:
+  e2e-full-chain:
+    if: github.ref == 'refs/heads/main'
+    needs: [lint, test-shared, test-backend, e2e-api-only, e2e-ui-mock]
+```
+- 仅在合并到 main 后执行
+- 作为主干质量的最后防线
+- 失败自动回滚或创建 issue
+
+#### 阶段 3：PR 手动触发（可选）
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, labeled]
+
+jobs:
+  e2e-full-chain:
+    if: contains(github.event.pull_request.labels.*.name, 'run-full-chain')
+```
+- 通过 PR label 手动触发
+- 用于涉及跨应用状态同步的重大变更
+- 需等基础 Job 通过后才执行
+
+#### 阶段 4：PR 自动执行（稳定后）
+- 当 `full-chain` 测试连续 2 周成功率 > 99% 时
+- 优化测试用例，将执行时间压缩到 5 分钟内
+- 考虑使用 Playwright sharding 并行执行
+- 最终纳入 PR 强制检查
 
 详见：
 
