@@ -1,23 +1,12 @@
 from django.core.cache import cache
 from rest_framework.views import APIView
 
-from common.auth import get_request_user
+from common.permissions import require_merchant_permission
 from common.response import error_response, success_response
 from .models import Merchant
 from .serializers import MerchantSerializer
 
 MERCHANT_LIST_CACHE_KEY = 'merchant:list'
-
-
-def require_merchant_permission(request, merchant_id: int):
-    user = get_request_user(request)
-    if user is None:
-        return error_response('请先登录', status_code=403)
-    if user.role != 'merchant':
-        return error_response('仅商家可操作', status_code=403)
-    if user.merchant_id != merchant_id:
-        return error_response('无权操作该商家数据', status_code=403)
-    return None
 
 
 class MerchantListView(APIView):

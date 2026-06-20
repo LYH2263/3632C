@@ -1,35 +1,39 @@
 from django.core.cache import cache
 from rest_framework.views import APIView
 
-from common.auth import get_request_user
+from common.permissions import require_merchant_permission
 from common.response import error_response, success_response
 from merchants.models import Merchant
 from .models import Product
 from .serializers import ProductSerializer
 
 
-def require_merchant_permission(request, merchant_id: int):
-    user = get_request_user(request)
-    if user is None:
-        return error_response('请先登录', status_code=403)
-    if user.role != 'merchant':
-        return error_response('仅商家可操作', status_code=403)
-    if user.merchant_id != merchant_id:
-        return error_response('无权操作该商家数据', status_code=403)
-    return None
+def _get_cache_version(merchant_key: str) -> int:
+    return cache.get(f'product:version:{merchant_key}', 0)
 
 
-def build_product_cache_key(merchant_id: str, keyword: str) -> str:
+def _bump_cache_version(merchant_key: str):
+    key = f'product:version:{merchant_key}'
+    cache.set(key, cache.get(key, 0) + 1)
+
+
+def build_product_cache_key(merchant_id: str | None, keyword: str) -> str:
     merchant_part = merchant_id or 'all'
     keyword_part = keyword or '_'
-    return f'product:list:{merchant_part}:{keyword_part}'
+    version = _get_cache_version(merchant_part)
+    return f'product:list:{merchant_part}:{version}:{keyword_part}'
+
+
+def invalidate_product_cache(merchant_id: int):
+    _bump_cache_version(str(merchant_id))
+    _bump_cache_version('all')
 
 
 class ProductListView(APIView):
     def get(self, request):
         merchant_id = request.query_params.get('merchant_id')
         keyword = request.query_params.get('keyword', '').strip()
-        cache_key = build_product_cache_key(str(merchant_id or ''), keyword)
+        cache_key = build_product_cache_key(merchant_id, keyword)
 
         cached = cache.get(cache_key)
         if cached is not None:
@@ -63,7 +67,7 @@ class ProductListView(APIView):
         serializer = ProductSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        cache.clear()
+        invalidate_product_cache(merchant.id)
 
         return success_response(serializer.data, status_code=201)
 
@@ -99,5 +103,5 @@ class ProductDetailView(APIView):
         serializer = ProductSerializer(product, data=payload, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        cache.clear()
+        invalidate_product_cache(target_merchant_id)
         return success_response(serializer.data)
