@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Merchant, Product } from '../types';
 import {
   canTransitionStatus,
   createOrderFromCart,
@@ -81,5 +82,72 @@ describe('下单创建', () => {
     expect(order.pay_method).toBe('offline');
     expect(order.items_snapshot.length).toBe(2);
     expect(order.total_amount).toBeGreaterThan(order.items_amount);
+  });
+});
+
+describe('库存边界校验', () => {
+  const baseMerchant: Merchant = {
+    id: 9001,
+    name: '边界测试商家',
+    phone: '020-00000001',
+    address: '测试地址',
+    delivery_note: '',
+    min_order_amount: 1,
+    delivery_fee: 0,
+    is_open: true
+  };
+
+  function makeProduct(overrides: Partial<Product> = {}): Product {
+    return {
+      id: 8001,
+      merchant_id: baseMerchant.id,
+      name: '边界商品',
+      price: 10,
+      unit: '个',
+      stock: 5,
+      is_active: true,
+      image_url: '',
+      description: '',
+      ...overrides
+    };
+  }
+
+  function makeCart(productId: number, quantity: number) {
+    return {
+      merchant_id: baseMerchant.id,
+      updated_at: new Date().toISOString(),
+      items: [{ product_id: productId, quantity }]
+    };
+  }
+
+  it('stock=-1 表示不限库存，任意数量均可通过', () => {
+    const product = makeProduct({ stock: -1 });
+    const cart = makeCart(product.id, 9999);
+    const result = validateCartForCheckout(cart, baseMerchant, [product]);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('stock=0 库存为零时应拒绝下单', () => {
+    const product = makeProduct({ stock: 0 });
+    const cart = makeCart(product.id, 1);
+    const result = validateCartForCheckout(cart, baseMerchant, [product]);
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('')).toContain('超过库存限制');
+  });
+
+  it('stock=1 且购买数量=1 时应通过', () => {
+    const product = makeProduct({ stock: 1 });
+    const cart = makeCart(product.id, 1);
+    const result = validateCartForCheckout(cart, baseMerchant, [product]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('stock=1 且购买数量=2 时应拒绝', () => {
+    const product = makeProduct({ stock: 1 });
+    const cart = makeCart(product.id, 2);
+    const result = validateCartForCheckout(cart, baseMerchant, [product]);
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('')).toContain('超过库存限制');
   });
 });

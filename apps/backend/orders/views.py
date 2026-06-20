@@ -159,6 +159,21 @@ class OrderListView(APIView):
         if errors:
             return error_response('下单失败', errors=errors)
 
+        locked_errors: list[str] = []
+        for item in payload['cart_items']:
+            product = Product.objects.select_for_update().filter(
+                id=item['product_id'], merchant=merchant
+            ).first()
+            if product and product.stock != -1:
+                quantity = int(item['quantity'])
+                if quantity > product.stock:
+                    locked_errors.append(f"{product.name} 库存不足")
+                else:
+                    product.stock = product.stock - quantity
+                    product.save(update_fields=['stock'])
+        if locked_errors:
+            return error_response('下单失败', errors=locked_errors)
+
         total_amount = items_amount + merchant.delivery_fee
 
         order = Order.objects.create(
@@ -176,12 +191,6 @@ class OrderListView(APIView):
             total_amount=total_amount,
             items_snapshot=snapshots
         )
-
-        for item in payload['cart_items']:
-            product = Product.objects.filter(id=item['product_id'], merchant=merchant).first()
-            if product and product.stock != -1:
-                product.stock = product.stock - int(item['quantity'])
-                product.save(update_fields=['stock'])
 
         return success_response(OrderSerializer(order).data, status_code=201)
 

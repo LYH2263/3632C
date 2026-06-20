@@ -80,7 +80,7 @@
 | `GET /products/:id` | 存在返回对象 | 不存在返回 `data=null` | `API-PRODUCT-004` |
 | `PATCH /products/:id` | 更新成功 | 商品不存在 404；merchant_id 非法 404 | `API-PRODUCT-005` |
 | `POST /cart/validate` | 校验成功 | 商家不存在、空购物车、商品不存在、数量<=0、超库存、已下架、未达起送价 | `API-CART-001`, `API-CART-002`, `API-CART-003` |
-| `POST /orders` | 创建 pending + snapshot + offline | 买家不存在、商家不存在、cart 校验失败 | `API-ORDER-001`, `API-ORDER-002` |
+| `POST /orders` | 创建 pending + snapshot + offline | 买家不存在、商家不存在、cart 校验失败、**并发超卖防护（单元测试覆盖）** | `API-ORDER-001`, `API-ORDER-002`, `UT-CONCURRENT-001` |
 | `GET /orders` | buyer/merchant 过滤 | - | `API-ORDER-003` |
 | `GET /orders/:id` | 存在返回对象 | 不存在返回 `data=null` | `API-ORDER-004` |
 | `PATCH /orders/:id/status` | 合法迁移、同状态幂等 | 订单不存在 404、非法迁移 400 | `API-ORDER-005` |
@@ -97,3 +97,4 @@
 - 页面覆盖：miniapp 全页面 + merchant-web 全页面。
 - 分支覆盖：UI 可达分支全部 UI E2E 覆盖，UI 不可达异常分支由 API-only 补齐。
 - 边界覆盖：库存、起送价、字段校验、状态机非法迁移、商家缺失、角色限制等全部落在可执行用例中。
+- 并发覆盖：API 层并发超卖防护由 Django `TransactionTestCase` 单元测试覆盖（`UT-CONCURRENT-001`），不依赖 E2E 套件。生产环境 MySQL 行级锁 `select_for_update` 生效；SQLite 下自动 skip。

@@ -1,4 +1,8 @@
-from django.test import TestCase
+import threading
+from unittest import skipIf
+
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient
 
 from merchants.models import Merchant
@@ -170,3 +174,143 @@ class OrderApiTests(TestCase):
             HTTP_AUTHORIZATION=f'Bearer django-token-{self.buyer.id}'
         )
         self.assertEqual(response.status_code, 403)
+
+
+class ConcurrentOrderTests(TransactionTestCase):
+    def setUp(self):
+        self.merchant = Merchant.objects.create(
+            name='并发测试超市',
+            phone='020-99990001',
+            address='并发路 1 号',
+            delivery_note='测试配送',
+            min_order_amount=1,
+            delivery_fee=0,
+            is_open=True
+        )
+        self.buyer_a = StoreUser.objects.create(
+            username='buyer_a',
+            password='pass1234',
+            role='buyer',
+            nickname='买家A',
+            phone='13800001111'
+        )
+        self.buyer_b = StoreUser.objects.create(
+            username='buyer_b',
+            password='pass1234',
+            role='buyer',
+            nickname='买家B',
+            phone='13800002222'
+        )
+        self.product = Product.objects.create(
+            merchant=self.merchant,
+            name='限量商品',
+            price=10,
+            unit='个',
+            stock=1,
+            is_active=True,
+            image_url='',
+            description='并发测试商品'
+        )
+
+    def _build_order_payload(self, buyer_id):
+        return {
+            'buyer_id': buyer_id,
+            'merchant_id': self.merchant.id,
+            'receiver_name': '测试',
+            'receiver_phone': '13800001111',
+            'receiver_address': '测试地址',
+            'cart_items': [
+                {'product_id': self.product.id, 'quantity': 1}
+            ]
+        }
+
+    @skipIf(
+        connection.vendor == 'sqlite',
+        'SQLite 不支持 select_for_update 行级锁，无法真实模拟并发竞态'
+    )
+    def test_concurrent_order_only_one_succeeds(self):
+        results = {}
+        barrier = threading.Barrier(2, timeout=10)
+
+        def place_order(buyer_id, key):
+            barrier.wait()
+            client = APIClient()
+            try:
+                response = client.post(
+                    '/api/v1/orders',
+                    self._build_order_payload(buyer_id),
+                    format='json'
+                )
+                results[key] = response.status_code
+            except Exception as exc:
+                results[key] = str(exc)
+            finally:
+                connection.close()
+
+        t1 = threading.Thread(target=place_order, args=(self.buyer_a.id, 'a'))
+        t2 = threading.Thread(target=place_order, args=(self.buyer_b.id, 'b'))
+        t1.start()
+        t2.start()
+        t1.join(timeout=15)
+        t2.join(timeout=15)
+
+        status_codes = list(results.values())
+        self.assertEqual(status_codes.count(201), 1, f'恰好一笔下单应成功，实际状态码: {results}')
+        self.assertEqual(status_codes.count(400), 1, f'另一笔应返回 400，实际状态码: {results}')
+
+        self.product.refresh_from_db()
+        self.assertGreaterEqual(self.product.stock, 0, f'库存不得为负，实际: {self.product.stock}')
+        self.assertEqual(self.product.stock, 0)
+        self.assertEqual(Order.objects.count(), 1)
+
+    def test_sequential_stock_exhaustion(self):
+        client = APIClient()
+
+        resp1 = client.post(
+            '/api/v1/orders',
+            self._build_order_payload(self.buyer_a.id),
+            format='json'
+        )
+        self.assertEqual(resp1.status_code, 201)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 0)
+
+        resp2 = client.post(
+            '/api/v1/orders',
+            self._build_order_payload(self.buyer_b.id),
+            format='json'
+        )
+        self.assertEqual(resp2.status_code, 400)
+
+        self.product.refresh_from_db()
+        self.assertGreaterEqual(self.product.stock, 0, f'库存不得为负，实际: {self.product.stock}')
+        self.assertEqual(Order.objects.count(), 1)
+
+    def test_zero_stock_rejects_order(self):
+        self.product.stock = 0
+        self.product.save(update_fields=['stock'])
+
+        client = APIClient()
+        resp = client.post(
+            '/api/v1/orders',
+            self._build_order_payload(self.buyer_a.id),
+            format='json'
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_unlimited_stock_allows_order(self):
+        self.product.stock = -1
+        self.product.save(update_fields=['stock'])
+
+        client = APIClient()
+        resp = client.post(
+            '/api/v1/orders',
+            self._build_order_payload(self.buyer_a.id),
+            format='json'
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(Order.objects.count(), 1)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, -1)
